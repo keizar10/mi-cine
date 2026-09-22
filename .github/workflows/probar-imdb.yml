@@ -1,0 +1,32 @@
+name: Probar lectura de IMDb
+
+on:
+  workflow_dispatch:
+
+env:
+  IMDB_USER_ID: "p.6dgdrodi7azh7xkvqqvs42yxzy"
+  SOLO_LEER: "1"
+
+jobs:
+  probar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests openpyxl
+      - name: Leer votos de IMDb
+        env:
+          TMDB_API_KEY: "no-se-usa"
+        run: python sincronizar_imdb.py
+      - name: Guardar diagnóstico
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostico-imdb
+          path: |
+            imdb_debug.json
+            imdb_debug.html
+            sincronizacion.log
+          if-no-files-found: ignore
