@@ -1,0 +1,52 @@
+name: Actualizar VOD y subir a Drive
+
+on:
+  schedule:
+    - cron: '0 4 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  EXCEL: "Movie Data Base by Keizar.xlsx"
+  GDRIVE_FILE_ID: "1Io1xGv2muiEILSGprmr1szDzwxOfiWXJ"
+
+jobs:
+  actualizar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@v4
+
+      - name: Preparar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar dependencias
+        run: |
+          pip install requests openpyxl google-auth
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libreoffice-calc > /dev/null
+
+      - name: Actualizar la columna VOD
+        env:
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+        run: python actualizar_vod.py
+
+      - name: Recalcular fórmulas
+        run: python recalcular.py "$EXCEL"
+
+      - name: Guardar los cambios en el repositorio
+        run: |
+          git config user.name  "github-actions"
+          git config user.email "github-actions@github.com"
+          git add -A
+          git diff --staged --quiet || git commit -m "VOD actualizado $(date +%d/%m/%Y)"
+          git push
+
+      - name: Subir la nueva versión a Google Drive
+        env:
+          GDRIVE_SA_JSON: ${{ secrets.GDRIVE_SA_JSON }}
+        run: python subir_drive.py "$EXCEL"
