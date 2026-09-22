@@ -1,6 +1,235 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
+Lee votos_imdb.csv (tus votos de IMDb, generado por la tarea mensual o exportado
+a mano desde IMDb) y lo vuelca al Excel:
+  - actualiza "Mi nota" de las películas/series que ya están
+  - añade las que faltan (datos de TMDB en español)
+  - refresca nota IMDb y votos de las puntuadas
+  - resuelve identificadores IMDb/TMDB que falten (series sobre todo)
+
+VARIABLES DE ENTORNO:
+    TMDB_API_KEY    clave v3 de TMDB
+"""
+import copy
+import json
+import os
+import re
+import sys
+import time
+from datetime import date
+
+import openpyxl
+from openpyxl.styles import Font
+
+from comun import (EXCEL, HOJA_PELIS, HOJA_SERIES, IDS_CSV, IDS_SERIES_CSV, P, S,
+                   Tmdb, cargar_ids, guardar_ids, decada, clasificar, paises,
+                   sinopsis_corta)
+
+LOG = []
+
+
+def log(msg):
+    print(msg)
+    LOG.append(msg)
+
+
+# ------------------------------------------------------------- votos (lectura)
+VOTOS_CSV = "votos_imdb.csv"
+
+
+def leer_votos_imdb():
+    """Lee votos_imdb.csv. Acepta dos formatos:
+    - el compacto que genera la tarea mensual (imdb_id,nota,fecha,tipo,anio,fin,duracion,imdb,votos)
+    - la exportación oficial de IMDb (Const,Your Rating,Date Rated,Title,...)
+    """
+    import csv
+    if not os.path.exists(VOTOS_CSV):
+        log(f"  no existe {VOTOS_CSV}")
+        return []
+    out = []
+    with open(VOTOS_CSV, encoding="utf-8-sig") as f:
+        for r in csv.DictReader(f):
+            if "Const" in r:                       # exportación oficial
+                tipo = r.get("Title Type", "")
+                out.append(dict(tt=r["Const"], nota=int(float(r["Your Rating"])), fecha=r.get("Date Rated"),
+                                titulo=r.get("Title"), original=r.get("Original Title"),
+                                anio=int(r["Year"]) if r.get("Year") else None, fin=None,
+                                tipo={"Película": "movie", "Movie": "movie", "Serie de TV": "tvSeries",
+                                      "TV Series": "tvSeries", "Miniserie de TV": "tvMiniSeries",
+                                      "TV Mini Series": "tvMiniSeries"}.get(tipo, tipo),
+                                dur=int(r["Runtime (mins)"]) if r.get("Runtime (mins)") else None,
+                                imdb=float(r["IMDb Rating"]) if r.get("IMDb Rating") else None,
+                                votos=int(r["Num Votes"]) if r.get("Num Votes") else None))
+            else:                                  # formato compacto
+                out.append(dict(tt=r["imdb_id"], nota=int(float(r["nota"])), fecha=r.get("fecha"),
+                                titulo=None, original=None,
+                                anio=int(r["anio"]) if r.get("anio") else None,
+                                fin=int(r["fin"]) if r.get("fin") else None,
+                                tipo=r.get("tipo"),
+                                dur=int(r["duracion"]) if r.get("duracion") else None,
+                                imdb=float(r["imdb"]) if r.get("imdb") else None,
+                                votos=int(r["votos"]) if r.get("votos") else None))
+    return out
+
+
+# ------------------------------------------------------------- Excel (escritura)
+def fila_vacia(ws):
+    for i in range(ws.max_row, 1, -1):
+        if ws.cell(i, 1).value not in (None, ""):
+            return i + 1
+    return 2
+
+
+def copiar_estilo(ws, origen, destino, ncols):
+    for c in range(1, ncols + 1):
+        ws.cell(destino, c)._style = copy.copy(ws.cell(origen, c)._style)
+    ws.row_dimensions[destino].height = ws.row_dimensions[origen].height
+
+
+def anadir_pelicula(ws, tmdb, tt, v, fila_modelo):
+    tipo, tid = tmdb.find_por_imdb(tt)
+    det = tmdb.detalles("movie", tid) if tipo == "movie" and tid else None
+    i = fila_vacia(ws)
+    copiar_estilo(ws, fila_modelo, i, P["tt"])
+    anio = v["anio"] or (int(det["release_date"][:4]) if det and det.get("release_date") else None)
+    directores = ", ".join(c["name"] for c in (det or {}).get("credits", {}).get("crew", [])
+                           if c.get("job") == "Director")[:60] or None
+    gen, sub = clasificar((det or {}).get("genres", []))
+    ws.cell(i, P["titulo"], (det or {}).get("title") or v["titulo"] or tt)
+    ws.cell(i, P["anio"], anio)
+    ws.cell(i, P["decada"], decada(anio))
+    ws.cell(i, P["dur"], v["dur"] or (det or {}).get("runtime") or None)
+    ws.cell(i, P["director"], directores)
+    ws.cell(i, P["imdb"], v["imdb"])
+    ws.cell(i, P["mi"], v["nota"])
+    ws.cell(i, P["votos"], v["votos"])
+    ws.cell(i, P["pais"], paises((det or {}).get("production_countries")))
+    ws.cell(i, P["genero"], gen)
+    ws.cell(i, P["subgenero"], sub)
+    ws.cell(i, P["sinopsis"], sinopsis_corta((det or {}).get("overview")))
+    for k in ("oscars", "oscar_peli", "oscar_dir", "nom", "fest", "globo"):
+        ws.cell(i, P[k], 0)
+    f = ws.cell(fila_modelo, P["puntos"]).value
+    if isinstance(f, str) and f.startswith("="):
+        ws.cell(i, P["puntos"], re.sub(r"([A-Z]+)%d\b" % fila_modelo, lambda m: m.group(1) + str(i), f))
+    ws.cell(i, P["tt"], tt)
+    return i, tid
+
+
+def anadir_serie(ws, tmdb, tt, v, fila_modelo):
+    tipo, tid = tmdb.find_por_imdb(tt)
+    det = tmdb.detalles("tv", tid) if tipo == "tv" and tid else None
+    i = fila_vacia(ws)
+    copiar_estilo(ws, fila_modelo, i, S["tt"])
+    anio = v["anio"] or (int(det["first_air_date"][:4]) if det and det.get("first_air_date") else None)
+    fin = v["fin"] or (int(det["last_air_date"][:4]) if det and det.get("last_air_date") and not det.get("in_production") else None)
+    gen, sub = clasificar((det or {}).get("genres", []))
+    creadores = ", ".join(c["name"] for c in (det or {}).get("created_by", []))[:60] or None
+    mini = (v["tipo"] or "").lower().find("mini") >= 0 or ((det or {}).get("type") == "Miniseries")
+    ws.cell(i, S["titulo"], (det or {}).get("name") or v["titulo"] or tt)
+    ws.cell(i, S["anio"], anio)
+    ws.cell(i, S["fin"], fin)
+    ws.cell(i, S["decada"], decada(anio))
+    ws.cell(i, S["tipo"], "Miniserie" if mini else "Serie")
+    ws.cell(i, S["creador"], creadores)
+    ws.cell(i, S["imdb"], v["imdb"])
+    ws.cell(i, S["mi"], v["nota"])
+    ws.cell(i, S["votos"], v["votos"])
+    ws.cell(i, S["pais"], paises((det or {}).get("production_countries") or
+                                 [{"iso_3166_1": c} for c in (det or {}).get("origin_country", [])]))
+    ws.cell(i, S["genero"], gen)
+    ws.cell(i, S["subgenero"], sub)
+    ws.cell(i, S["sinopsis"], sinopsis_corta((det or {}).get("overview")))
+    for k in ("emmys", "emmy_serie", "nom_emmy"):
+        ws.cell(i, S[k], 0)
+    ws.cell(i, S["tt"], tt)
+    return i, tid
+
+
+def main():
+    log(f"== Sincronización IMDb {date.today():%d/%m/%Y} ==")
+    votos = leer_votos_imdb()
+    log(f"Votos leídos de IMDb: {len(votos)}")
+    if not votos:
+        sys.exit("No se ha podido leer ningún voto; no toco el Excel.")
+
+    tmdb = Tmdb()
+    wb = openpyxl.load_workbook(EXCEL)
+    wp, wsr = wb[HOJA_PELIS], wb[HOJA_SERIES]
+    ids_p = cargar_ids(IDS_CSV)
+    ids_s = cargar_ids(IDS_SERIES_CSV)
+    idx_p = {f["imdb_id"]: f for f in ids_p if f["imdb_id"]}
+    idx_s = {f["imdb_id"]: f for f in ids_s if f["imdb_id"]}
+
+    fila_p = {wp.cell(i, P["tt"]).value: i for i in range(2, wp.max_row + 1) if wp.cell(i, P["tt"]).value}
+    fila_s = {wsr.cell(i, S["tt"]).value: i for i in range(2, wsr.max_row + 1) if wsr.cell(i, S["tt"]).value}
+    modelo_p = max(fila_p.values()) if fila_p else 2
+    modelo_s = max(fila_s.values()) if fila_s else 2
+
+    # 1) resolver ids que falten en la hoja de series (título -> TMDB -> IMDb)
+    resueltas = 0
+    for i in range(2, wsr.max_row + 1):
+        t = wsr.cell(i, S["titulo"]).value
+        if not t or wsr.cell(i, S["tt"]).value:
+            continue
+        base = re.sub(r"\s*\(.*\)$", "", str(t))
+        tid = tmdb.buscar_tv(base, wsr.cell(i, S["anio"]).value) or tmdb.buscar_tv(base)
+        tt = tmdb.externos("tv", tid) if tid else None
+        if tt:
+            wsr.cell(i, S["tt"], tt); fila_s[tt] = i; resueltas += 1
+            ids_s.append(dict(titulo=t, anio=wsr.cell(i, S["anio"]).value, imdb_id=tt, tmdb_id=str(tid)))
+            idx_s[tt] = ids_s[-1]
+    if resueltas:
+        log(f"Series con identificador resuelto vía TMDB: {resueltas}")
+
+    # 2) volcar votos
+    nuevas_p, nuevas_s, cambiadas, refrescadas = [], [], [], 0
+    for v in votos:
+        tt = v["tt"]
+        es_serie = (v["tipo"] or "").lower() in ("tvseries", "tvminiseries", "serie de tv", "miniserie de tv", "tv series", "tv mini series")
+        if tt in fila_p:
+            ws, i, col_mi, col_imdb, col_votos = wp, fila_p[tt], P["mi"], P["imdb"], P["votos"]
+        elif tt in fila_s:
+            ws, i, col_mi, col_imdb, col_votos = wsr, fila_s[tt], S["mi"], S["imdb"], S["votos"]
+        else:
+            ws = None
+        if ws is None:
+            if es_serie:
+                i, tid = anadir_serie(wsr, tmdb, tt, v, modelo_s)
+                fila_s[tt] = i; nuevas_s.append(wsr.cell(i, 1).value)
+                ids_s.append(dict(titulo=wsr.cell(i, 1).value, anio=wsr.cell(i, 2).value, imdb_id=tt, tmdb_id=str(tid or "")))
+            else:
+                i, tid = anadir_pelicula(wp, tmdb, tt, v, modelo_p)
+                fila_p[tt] = i; nuevas_p.append(wp.cell(i, 1).value)
+                ids_p.append(dict(titulo=wp.cell(i, 1).value, anio=wp.cell(i, 2).value, imdb_id=tt, tmdb_id=str(tid or "")))
+            continue
+        actual = ws.cell(i, col_mi).value
+        if actual != v["nota"]:
+            ws.cell(i, col_mi, v["nota"])
+            cambiadas.append(f"{ws.cell(i, 1).value} ({actual} → {v['nota']})")
+        if v["imdb"] and ws.cell(i, col_imdb).value != v["imdb"]:
+            ws.cell(i, col_imdb, v["imdb"]); refrescadas += 1
+        if v["votos"]:
+            ws.cell(i, col_votos, v["votos"])
+
+    wb.save(EXCEL)
+    guardar_ids(IDS_CSV, ids_p)
+    guardar_ids(IDS_SERIES_CSV, ids_s)
+
+    log(f"Películas nuevas añadidas: {len(nuevas_p)}" + (": " + "; ".join(nuevas_p[:15]) if nuevas_p else ""))
+    log(f"Series nuevas añadidas: {len(nuevas_s)}" + (": " + "; ".join(nuevas_s[:15]) if nuevas_s else ""))
+    log(f"Notas cambiadas: {len(cambiadas)}" + (": " + "; ".join(cambiadas[:15]) if cambiadas else ""))
+    log(f"Notas IMDb refrescadas: {refrescadas}")
+    with open("sincronizacion.log", "a", encoding="utf-8") as f:
+        f.write("\n".join(LOG) + "\n\n")
+
+
+if __name__ == "__main__":
+    main()
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
 Lee la lista PÚBLICA de puntuaciones de IMDb del usuario y la vuelca al Excel:
   - actualiza "Mi nota" de las películas/series que ya están
   - añade las que faltan (datos de TMDB en español)
