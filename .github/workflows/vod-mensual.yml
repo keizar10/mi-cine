@@ -4,6 +4,9 @@ on:
   schedule:
     - cron: '0 4 1 * *'
   workflow_dispatch:
+  push:
+    paths:
+      - 'votos_imdb.csv'
 
 permissions:
   contents: write
@@ -30,6 +33,11 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq libreoffice-calc > /dev/null
 
+      - name: Sincronizar votos de IMDb
+        env:
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+        run: python sincronizar_imdb.py
+
       - name: Actualizar la columna VOD
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
@@ -38,12 +46,15 @@ jobs:
       - name: Recalcular fórmulas
         run: python recalcular.py "$EXCEL"
 
+      - name: Generar datos.json
+        run: python generar_datos.py
+
       - name: Guardar los cambios en el repositorio
         run: |
           git config user.name  "github-actions"
           git config user.email "github-actions@github.com"
           git add -A
-          git diff --staged --quiet || git commit -m "VOD actualizado $(date +%d/%m/%Y)"
+          git diff --staged --quiet || git commit -m "Actualización $(date +%d/%m/%Y)"
           git push
 
       - name: Subir la nueva versión a Google Drive
