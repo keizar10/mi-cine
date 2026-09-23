@@ -217,6 +217,21 @@ def main():
     guardar_ids(IDS_CSV, ids_p)
     guardar_ids(IDS_SERIES_CSV, ids_s)
 
+    # 3) historial de votos con fecha (para "últimas votadas" en la app)
+    import csv
+    hist = {}
+    if os.path.exists("historial_votos.csv"):
+        with open("historial_votos.csv", encoding="utf-8-sig") as f:
+            for r in csv.DictReader(f):
+                hist[r["imdb_id"]] = (r["fecha"], r["nota"])
+    for v in votos:
+        if v["fecha"]:
+            hist[v["tt"]] = (v["fecha"], str(v["nota"]))
+    with open("historial_votos.csv", "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f); w.writerow(["imdb_id", "fecha", "nota"])
+        for tt, (fe, no) in sorted(hist.items(), key=lambda x: x[1][0], reverse=True):
+            w.writerow([tt, fe, no])
+
     log(f"Películas nuevas añadidas: {len(nuevas_p)}" + (": " + "; ".join(nuevas_p[:15]) if nuevas_p else ""))
     log(f"Series nuevas añadidas: {len(nuevas_s)}" + (": " + "; ".join(nuevas_s[:15]) if nuevas_s else ""))
     log(f"Notas cambiadas: {len(cambiadas)}" + (": " + "; ".join(cambiadas[:15]) if cambiadas else ""))
