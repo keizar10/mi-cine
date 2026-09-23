@@ -1,3 +1,15 @@
+# .github/workflows/vod-mensual.yml
+#
+# El día 1 de cada mes (y cuando lo lances a mano):
+#   1. vuelca votos_imdb.csv (tus votos de IMDb) al Excel: notas nuevas, pelis nuevas
+#   2. actualiza la columna VOD (películas y series) con TMDB
+#   3. recalcula las fórmulas con LibreOffice
+#   4. recoge carátulas nuevas y genera datos.json (para la app)
+#   5. guarda todo en el repositorio
+#   6. sube el Excel sobre el MISMO archivo de Google Drive
+#
+# SECRETOS: TMDB_API_KEY, GDRIVE_SA_JSON
+
 name: Actualizar VOD y subir a Drive
 
 on:
@@ -42,6 +54,11 @@ jobs:
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
         run: python actualizar_vod.py
+
+      - name: Recoger carátulas (TMDB)
+        env:
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+        run: python posters.py
 
       - name: Recalcular fórmulas
         run: python recalcular.py "$EXCEL"
